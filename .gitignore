@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+PROSPECTS*.md
+LISTING.md
+out/*
+!out/example.md
+!out/example.json
