@@ -50,7 +50,7 @@ import zlib
 from html.parser import HTMLParser
 from types import SimpleNamespace
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 UA_TOKEN = "geo-scan"
 UA = f"{UA_TOKEN}/{__version__} (+https://github.com/AureliusClaw/geo-scan; answer-engine readiness audit)"
 

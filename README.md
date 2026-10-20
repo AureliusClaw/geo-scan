@@ -5,7 +5,11 @@ One file. No API key. No account. No dependencies beyond the Python standard lib
 `geo_scan.py` reads a public website the way an answer engine's crawler would and scores
 **how readily engines such as ChatGPT search, Perplexity, Claude, Gemini / Google AI
 Overviews and Copilot can fetch, parse and quote it**, on a 0–100 scale. It then lists
-the changes that would raise the score. Version 1.2.0.
+the changes that would raise the score. Version 1.2.1.
+
+**Limitation up front (v1):** quotability scoring is English-phrase-based. Non-English
+pages score lower on that axis, and the report notes the page language. Requests also
+carry a fixed `Accept-Language: en,en-US;q=0.8,de;q=0.6` header.
 
 ```bash
 python3 geo_scan.py https://self-attention.org --pages 6 --md report.md --json report.json
@@ -42,7 +46,7 @@ TLS. On macOS with a python.org Python, run `Install Certificates.command` once.
 
 ## How it behaves on your site
 
-* User-Agent: `geo-scan/1.2.0 (+https://github.com/AureliusClaw/geo-scan; answer-engine readiness audit)`.
+* User-Agent: `geo-scan/1.2.1 (+https://github.com/AureliusClaw/geo-scan; answer-engine readiness audit)`.
 * It reads `robots.txt` first and obeys it for its own token `geo-scan` (and `*`) on every
   later request, redirect targets included. URLs it skips are listed in the report's Notes.
 * It fetches the root page right after `robots.txt`. With a long `Crawl-delay`, optional
@@ -76,8 +80,9 @@ TLS. On macOS with a python.org Python, run `Install Certificates.command` once.
   groups name the same agent, only the first counts. Only the audited host's robots.txt
   is read: it is applied to every sampled path, including `www.` / apex variants that
   would strictly have their own robots.txt.
-* **Quotability heuristics are English-only.** Non-English pages score near zero on the
-  phrase check; the report notes the page language when it is not English.
+* **Quotability heuristics are English-only (documented v1 limitation).** Non-English
+  pages score lower, near zero, on the phrase check; the report notes the page language
+  when it is not English. The fixed `Accept-Language` header is English-first.
 * **No JavaScript rendering.** Pages that are almost empty and script-heavy are flagged as
   probably JS-rendered. Most AI crawlers do not render JS either.
 * **Single automated sample, no human review.** The score moves with the sample, so use the
@@ -87,6 +92,9 @@ TLS. On macOS with a python.org Python, run `Install Certificates.command` once.
 
 The repo root is also a Hermes plugin (`plugin.yaml`, `__init__.py`). It registers the
 `geo_scan` tool with a 90 s budget, and it refuses hosts that resolve to private,
-loopback or link-local addresses, redirects included.
+loopback or link-local addresses, redirects included. Scanning is read-only; with
+`save=true` the tool also writes a Markdown and a JSON report to `out_dir` (default
+`~/.hermes/cache/scratch/geo-scan`). The scoring engine is always the `geo_scan.py` next
+to `__init__.py`; it cannot be overridden by environment variable or fallback path.
 
 MIT licensed.

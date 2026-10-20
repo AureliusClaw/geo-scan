@@ -1,8 +1,8 @@
 """Hermes plugin: geo_scan — answer-engine readiness audit (no API key, stdlib).
 
 The engine is `geo_scan.py` next to this file; the repo root IS the plugin
-directory, so there is exactly one copy of the scoring code. Set
-GEO_SCAN_ENGINE=/path/to/geo_scan.py to point at another one.
+directory, so there is exactly one copy of the scoring code. The engine path is
+fixed; there is no override and no fallback location.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 _HERE = Path(__file__).resolve().parent
 _MAX_PAGES = 25
@@ -22,16 +22,12 @@ _BUDGET_SECONDS = 90  # the scan runs synchronously inside an agent turn
 
 
 def _engine_path() -> Path:
-    override = os.environ.get("GEO_SCAN_ENGINE")
-    candidates = [Path(override)] if override else [_HERE / "geo_scan.py"]
-    candidates += [_HERE / "engine.py", _HERE.parent / "geo_scan.py"]
-    for cand in candidates:
-        if cand.is_file():
-            return cand
-    raise RuntimeError(
-        "geo-scan engine not found — looked for geo_scan.py next to the plugin "
-        f"({ _HERE }); install the whole geo-scan repo or set GEO_SCAN_ENGINE"
-    )
+    path = _HERE / "geo_scan.py"
+    if not path.is_file():
+        raise RuntimeError(
+            f"geo-scan engine not found: expected {path}; reinstall the whole geo-scan plugin"
+        )
+    return path
 
 
 def _load_engine():
@@ -103,7 +99,7 @@ def _handle_geo_scan(params: dict) -> str:
 
     if params.get("save"):
         try:
-            out_dir = Path(params.get("out_dir") or os.environ.get("HERMES_GEO_SCAN_OUT")
+            out_dir = Path(params.get("out_dir")
                            or Path.home() / ".hermes" / "cache" / "scratch" / "geo-scan")
             out_dir.mkdir(parents=True, exist_ok=True)
             slug = urllib.parse.urlparse(root).netloc.replace("www.", "_")
@@ -128,9 +124,10 @@ def register(ctx):
         "Audit a public website's answer-engine readiness (ChatGPT search / Perplexity / "
         "Claude / Gemini / AI Overviews): 0-100 across crawler access for search agents, "
         "machine readability, snippet permissions, structure, quotability and freshness, "
-        "each with its evidence, plus a prioritised fix list. No API key; read-only, "
-        "robots.txt-obedient HTTP GETs at about one per second, max 90 s per scan. "
-        "Public hosts only."
+        "each with its evidence, plus a prioritised fix list. No API key. Scanning is "
+        "read-only: robots.txt-obedient HTTP GETs at about one per second, max 90 s, "
+        "public hosts only. When save=true the tool additionally writes two report "
+        "files (Markdown + JSON) to out_dir (default ~/.hermes/cache/scratch/geo-scan)."
     )
     ctx.register_tool(
         name="geo_scan",

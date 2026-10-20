@@ -1,8 +1,12 @@
 ---
 name: geo-scan
-description: Audit a public website's answer-engine readiness (ChatGPT, Perplexity, Claude, Gemini, AI Overviews) and produce a prioritised fix list. Use when someone asks whether AI engines can read, cite or quote their site, wants a GEO/AEO audit, a robots.txt / snippet-permission / schema check, or a score for how quotable their content is. No API key, no account, Python stdlib only.
-version: 1.2.0
+description: Audit the answer-engine readiness (ChatGPT, Perplexity, Claude, Gemini, AI Overviews) of one public website URL and produce a prioritised fix list. Use when someone gives a public site or page URL and asks whether AI engines can crawl, cite or quote it, or wants its robots.txt / snippet-permission / schema check or quotability score. Not for - private or intranet hosts, JS-rendered SPAs, SEO keyword research, writing content to beat competitors. English-phrase-based quotability scoring. No API key, no account, Python stdlib only.
+version: 1.2.1
 license: MIT
+permissions:
+  network: outbound HTTP(S) GET only, public hosts, robots.txt obeyed, max 25 pages / 90 s
+  filesystem: read plugin dir; write only report files under out_dir when save=true
+  no_credentials: reads, sends and stores no credentials or secrets
 metadata:
   author: Aurelius
   homepage: https://github.com/AureliusClaw/geo-scan
@@ -19,8 +23,16 @@ so the report is checkable rather than advisory.
 - "Can ChatGPT / Perplexity / Gemini see or cite my site?"
 - "Why isn't my site showing up in AI answers?"
 - "Review my robots.txt / llms.txt / schema.org / structured data."
-- "Score how quotable this site is" / any GEO, AEO or AI-SEO audit request.
+- "Score how quotable this site is" for a given public URL.
 - Before and after a content change, to measure whether answer-engine readiness moved.
+
+Not for: private, intranet or loopback hosts (refused); JS-rendered SPAs (no JS
+rendering, so the page reads as near-empty); SEO keyword research; writing content to
+outrank competitors.
+
+**Language limitation (v1):** quotability scoring is English-phrase-based. Non-English
+pages score lower on that axis, and the report notes the page language. The scan also
+sends a fixed `Accept-Language: en,en-US;q=0.8,de;q=0.6` header.
 
 ## How to run
 
@@ -62,17 +74,19 @@ hand to a client — it is the part that can be re-checked.
 
 ## Limits worth stating up front
 
-- Read-only HTTP GETs of public pages. `--pages` defaults to 8 and is clamped to 1–25.
+- **Quotability scoring is English-phrase-based** (v1, documented limitation): non-English
+  pages score lower on that axis; the report notes the page language.
+- Read-only HTTP GETs of public pages (the plugin's `save=true` additionally writes the
+  Markdown + JSON report to `out_dir`). `--pages` defaults to 8 and is clamped to 1–25.
   geo-scan obeys robots.txt for `geo-scan`, waits at least 1 s between requests (more if
   `Crawl-delay` asks), stays on the audited host, caps downloads, and caps a scan at
   120 s (`--budget`).
 - It measures **technical** readiness, not whether an engine actually cites the site.
 - CDN or WAF bot blocking (e.g. Cloudflare's AI-crawler blocking) is invisible to it: an
   open robots.txt does not prove crawlers get through.
-- Quotability heuristics are English-only. There is no JS rendering; near-empty,
-  script-heavy pages are flagged.
+- There is no JS rendering; near-empty, script-heavy pages are flagged.
 - It is a single automated sample with no human review. Use the same `--pages` value for
   before/after comparisons.
-- Sent with `User-Agent: geo-scan/1.2.0 (+https://github.com/AureliusClaw/geo-scan; answer-engine readiness audit)`,
+- Sent with `User-Agent: geo-scan/1.2.1 (+https://github.com/AureliusClaw/geo-scan; answer-engine readiness audit)`,
   so a site owner can find this run in their own logs. They can opt out with
   `User-agent: geo-scan` / `Disallow: /`.

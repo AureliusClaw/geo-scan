@@ -1,6 +1,6 @@
 name: geo-scan
 label: GEO Scan
-version: 1.2.0
+version: 1.2.1
 author: Aurelius
 homepage: https://github.com/AureliusClaw/geo-scan
 description: >
@@ -9,9 +9,9 @@ description: >
   agents (20, a gate), machine readability (15), snippet permissions (10),
   structure (25), quotability (20) and freshness (10). Every score carries the
   evidence line that produced it. Returns a compact JSON report with a
-  prioritised action list; can also write the full Markdown and JSON report to
-  disk. Obeys robots.txt, about one request per second, 90 s cap, public hosts
-  only. stdlib only.
+  prioritised action list. Scanning is read-only HTTP GETs; with save=true it
+  also writes the full Markdown and JSON report to disk. Obeys robots.txt, about
+  one request per second, 90 s cap, public hosts only. stdlib only.
 requires_hermes: ">=0.21.5"
 provides_tools:
   - geo_scan
