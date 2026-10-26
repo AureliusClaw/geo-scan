@@ -5,7 +5,7 @@ One file. No API key. No account. No dependencies beyond the Python standard lib
 `geo_scan.py` reads a public website the way an answer engine's crawler would and scores
 **how readily engines such as ChatGPT search, Perplexity, Claude, Gemini / Google AI
 Overviews and Copilot can fetch, parse and quote it**, on a 0–100 scale. It then lists
-the changes that would raise the score. Version 1.2.1.
+the changes that would raise the score. Version 1.2.2.
 
 **Limitation up front (v1):** quotability scoring is English-phrase-based. Non-English
 pages score lower on that axis, and the report notes the page language. Requests also
@@ -46,7 +46,7 @@ TLS. On macOS with a python.org Python, run `Install Certificates.command` once.
 
 ## How it behaves on your site
 
-* User-Agent: `geo-scan/1.2.1 (+https://github.com/AureliusClaw/geo-scan; answer-engine readiness audit)`.
+* User-Agent: `geo-scan/1.2.2 (+https://github.com/AureliusClaw/geo-scan; answer-engine readiness audit)`.
 * It reads `robots.txt` first and obeys it for its own token `geo-scan` (and `*`) on every
   later request, redirect targets included. URLs it skips are listed in the report's Notes.
 * It fetches the root page right after `robots.txt`. With a long `Crawl-delay`, optional

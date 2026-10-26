@@ -1,7 +1,7 @@
 ---
 name: geo-scan
 description: Audit the answer-engine readiness (ChatGPT, Perplexity, Claude, Gemini, AI Overviews) of one public website URL and produce a prioritised fix list. Use when someone gives a public site or page URL and asks whether AI engines can crawl, cite or quote it, or wants its robots.txt / snippet-permission / schema check or quotability score. Not for - private or intranet hosts, JS-rendered SPAs, SEO keyword research, writing content to beat competitors. English-phrase-based quotability scoring. No API key, no account, Python stdlib only.
-version: 1.2.1
+version: 1.2.2
 license: MIT
 permissions:
   network: outbound HTTP(S) GET only, public hosts, robots.txt obeyed, max 25 pages / 90 s
@@ -87,6 +87,6 @@ hand to a client — it is the part that can be re-checked.
 - There is no JS rendering; near-empty, script-heavy pages are flagged.
 - It is a single automated sample with no human review. Use the same `--pages` value for
   before/after comparisons.
-- Sent with `User-Agent: geo-scan/1.2.1 (+https://github.com/AureliusClaw/geo-scan; answer-engine readiness audit)`,
+- Sent with `User-Agent: geo-scan/1.2.2 (+https://github.com/AureliusClaw/geo-scan; answer-engine readiness audit)`,
   so a site owner can find this run in their own logs. They can opt out with
   `User-agent: geo-scan` / `Disallow: /`.

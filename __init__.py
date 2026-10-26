@@ -6,38 +6,28 @@ fixed; there is no override and no fallback location.
 """
 from __future__ import annotations
 
-import importlib.util
 import json
-import os
 import time
 import urllib.parse
 from pathlib import Path
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 
-_HERE = Path(__file__).resolve().parent
 _MAX_PAGES = 25
 _DEFAULT_PAGES = 8
 _BUDGET_SECONDS = 90  # the scan runs synchronously inside an agent turn
 
 
-def _engine_path() -> Path:
-    path = _HERE / "geo_scan.py"
-    if not path.is_file():
-        raise RuntimeError(
-            f"geo-scan engine not found: expected {path}; reinstall the whole geo-scan plugin"
-        )
-    return path
-
-
 def _load_engine():
-    path = _engine_path()
-    spec = importlib.util.spec_from_file_location("geo_scan_engine", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Cannot load geo-scan engine from {path}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    """Import the engine as a plain submodule of this plugin package.
+
+    A static relative import — no file-path spec, no exec_module, no fallback
+    locations — so nothing outside the installed plugin package can be executed.
+    Hermes loads this directory as a package (it sets __path__ to the plugin
+    dir), which is what makes `from . import geo_scan` resolve.
+    """
+    from . import geo_scan  # noqa: PLC0415 - the engine is this package's submodule
+    return geo_scan
 
 
 def _normalise(url: str) -> str:
