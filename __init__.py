@@ -11,7 +11,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
-__version__ = "1.2.2"
+__version__ = "1.2.3"
 
 _MAX_PAGES = 25
 _DEFAULT_PAGES = 8

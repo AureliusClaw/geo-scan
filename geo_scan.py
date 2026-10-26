@@ -50,7 +50,7 @@ import zlib
 from html.parser import HTMLParser
 from types import SimpleNamespace
 
-__version__ = "1.2.2"
+__version__ = "1.2.3"
 UA_TOKEN = "geo-scan"
 UA = f"{UA_TOKEN}/{__version__} (+https://github.com/AureliusClaw/geo-scan; answer-engine readiness audit)"
 
@@ -610,16 +610,27 @@ def snippet_directives(robots_meta, x_robots):
 
 QUOTABLE = re.compile(
     r"(\bis defined as|\brefers to\b|\bmeans that\b|\bin short\b|\bthe difference between\b|"
-    r"\bkey takeaways?\b|\bfor example\b|\be\.g\.|\bcompared to\b|\bthree (?:ways|steps|reasons)\b)",
+    r"\bkey takeaways?\b|\bfor example\b|\be\.g\.|\bcompared to\b|\bthree (?:ways|steps|reasons)\b|"
+    # German — the target market for this skill writes German, and an English-only
+    # phrase list scored every German site near zero (45/45 <=8/20 on 2026-10-26).
+    r"\bist definiert als\b|\bbezeichnet\b|\bbedeutet\b|\bkurz gesagt\b|\bzusammengefasst\b|"
+    r"\bder unterschied zwischen\b|\bim vergleich\b|\bdas wichtigsten?[en]?\b|"
+    r"\bzum beispiel\b|\bz\. ?B\.\b|\bauf einen blick\b|\bwissenswertes\b|"
+    r"\bwie funktioniert\b|\bwas ist\b|\bwie lange\b|\bwie viel\b|\bwann\b|\bwer\b)",
     re.I)
 # Figures: currency amounts, percentages, measured quantities. Plain durations
 # ("5 min read", "30 days") are left out — they are mostly UI widgets.
 STAT = re.compile(
-    r"(?:[$€£]\s?\d[\d.,]*(?:\s?(?:k|m|bn|million|billion)\b)?"
+    r"(?:[$€£]\s?\d[\d.,]*(?:\s?(?:k|m|bn|million|billion|euro|eur|cent|ct\.?)\b)?"
+    r"|\d[\d.]{1,3}\s?(?:Euro|EUR|cent|Prozent|Minuten|Sekunden|Stunden|Tagen|Jahren|Monaten|"
+    r"Km|km|kg|Kg|Meter|Metern|GB|MB|TB|ms|fach|mal)\b"
     r"|\b\d[\d.,]*\s?(?:%|percent\b|ms\b|GB\b|MB\b|TB\b|kg\b|km\b|USD\b|EUR\b|€|"
     r"million\b|billion\b|x\b))",
     re.I)
-QUESTION_TITLE = re.compile(r"\?|\b(?:how|what|why|when|which|can you|does|is it)\b", re.I)
+QUESTION_TITLE = re.compile(
+    r"\?|\b(?:how|what|why|when|which|can you|does|is it)\b"
+    r"|\b(?:wie|was|warum|weshalb|wann|welche?s?|kann man|sind|ist|brauche ich|lohnt)\b",
+    re.I)
 
 
 def analyse_page(url, html_body):

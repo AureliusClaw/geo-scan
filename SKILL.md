@@ -1,7 +1,7 @@
 ---
 name: geo-scan
-description: Audit the answer-engine readiness (ChatGPT, Perplexity, Claude, Gemini, AI Overviews) of one public website URL and produce a prioritised fix list. Use when someone gives a public site or page URL and asks whether AI engines can crawl, cite or quote it, or wants its robots.txt / snippet-permission / schema check or quotability score. Not for - private or intranet hosts, JS-rendered SPAs, SEO keyword research, writing content to beat competitors. English-phrase-based quotability scoring. No API key, no account, Python stdlib only.
-version: 1.2.2
+description: Audit the answer-engine readiness (ChatGPT, Perplexity, Claude, Gemini, AI Overviews) of one public website URL and produce a prioritised fix list. Use when someone gives a public site or page URL and asks whether AI engines can crawl, cite or quote it, or wants its robots.txt / snippet-permission / schema check or quotability score. Not for - private or intranet hosts, JS-rendered SPAs, SEO keyword research, writing content to beat competitors. English and German quotability scoring. No API key, no account, Python stdlib only.
+version: 1.2.3
 license: MIT
 permissions:
   network: outbound HTTP(S) GET only, public hosts, robots.txt obeyed, max 25 pages / 90 s
@@ -30,9 +30,14 @@ Not for: private, intranet or loopback hosts (refused); JS-rendered SPAs (no JS
 rendering, so the page reads as near-empty); SEO keyword research; writing content to
 outrank competitors.
 
-**Language limitation (v1):** quotability scoring is English-phrase-based. Non-English
-pages score lower on that axis, and the report notes the page language. The scan also
-sends a fixed `Accept-Language: en,en-US;q=0.8,de;q=0.6` header.
+**Language coverage:** quotability scoring matches definitional, comparison and
+question phrases in **English and German** (German patterns added in 1.2.3 after a
+45-site Oldenburg batch showed all 45 scanned sites at ≤ 8/20 on that axis — a real gap,
+partly an artefact of an English-only phrase list). Re-measured with the same URLs at
+`pages=2` (44 sites re-scanned, 1 unreachable): sites at ≤ 8/20 fell **44 → 39**, median quotability **4.0 → 6.0**, median
+total **61.6 → 62.4**. Other languages still score lower on that axis, and the report
+notes the page language. The scan sends a fixed
+`Accept-Language: en,en-US;q=0.8,de;q=0.6` header.
 
 ## How to run
 
@@ -59,7 +64,7 @@ The plugin refuses private, loopback and link-local hosts and stops after 90 s.
 | Machine readability | 15 | a sitemap (robots.txt `Sitemap:`, `/sitemap.xml`, `/wp-sitemap.xml`) with `<lastmod>` coverage; `llms.txt` / `llms-full.txt` (4 pts, speculative) |
 | Snippet permissions | 10 | no `noindex` / `nosnippet` / `max-snippet:0` in meta robots or `X-Robots-Tag`; `data-nosnippet` costs a little |
 | Page structure | 25 | one `<h1>`, article-level schema.org JSON-LD, meta description, author, ≥300 words, lists, canonical |
-| Quotability | 20 | definitional phrases, hard figures, tables, question-form titles, `<h2>` sections (English phrase lists) |
+| Quotability | 20 | definitional phrases, hard figures, tables, question-form titles, `<h2>` sections (English + German phrase lists) |
 | Freshness | 10 | median of each sampled page's newest JSON-LD date (else median sitemap `<lastmod>`); future dates discarded |
 
 Grades: A ≥ 80 · B ≥ 65 · C ≥ 50 · D ≥ 35 · F below.
@@ -74,7 +79,7 @@ hand to a client — it is the part that can be re-checked.
 
 ## Limits worth stating up front
 
-- **Quotability scoring is English-phrase-based** (v1, documented limitation): non-English
+- **Quotability scoring covers English and German phrases** (German added in 1.2.3): other
   pages score lower on that axis; the report notes the page language.
 - Read-only HTTP GETs of public pages (the plugin's `save=true` additionally writes the
   Markdown + JSON report to `out_dir`). `--pages` defaults to 8 and is clamped to 1–25.
@@ -87,6 +92,6 @@ hand to a client — it is the part that can be re-checked.
 - There is no JS rendering; near-empty, script-heavy pages are flagged.
 - It is a single automated sample with no human review. Use the same `--pages` value for
   before/after comparisons.
-- Sent with `User-Agent: geo-scan/1.2.2 (+https://github.com/AureliusClaw/geo-scan; answer-engine readiness audit)`,
+- Sent with `User-Agent: geo-scan/1.2.3 (+https://github.com/AureliusClaw/geo-scan; answer-engine readiness audit)`,
   so a site owner can find this run in their own logs. They can opt out with
   `User-agent: geo-scan` / `Disallow: /`.

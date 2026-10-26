@@ -5,10 +5,14 @@ One file. No API key. No account. No dependencies beyond the Python standard lib
 `geo_scan.py` reads a public website the way an answer engine's crawler would and scores
 **how readily engines such as ChatGPT search, Perplexity, Claude, Gemini / Google AI
 Overviews and Copilot can fetch, parse and quote it**, on a 0–100 scale. It then lists
-the changes that would raise the score. Version 1.2.2.
+the changes that would raise the score. Version 1.2.3.
 
-**Limitation up front (v1):** quotability scoring is English-phrase-based. Non-English
-pages score lower on that axis, and the report notes the page language. Requests also
+**Language coverage:** quotability scoring matches definitional, comparison and question
+phrases in **English and German**. German patterns landed in 1.2.3, after a 45-site
+Oldenburg batch showed all 45 scanned sites at ≤ 8/20 on that axis — a real gap, partly inflated
+by an English-only phrase list. Re-scanning the 44 reachable URLs at `pages=2` moved sites at
+≤ 8/20 from **44 to 39** and median quotability from **4.0 to 6.0**. Other languages
+score lower on that axis, and the report notes the page language. Requests also
 carry a fixed `Accept-Language: en,en-US;q=0.8,de;q=0.6` header.
 
 ```bash
@@ -46,7 +50,7 @@ TLS. On macOS with a python.org Python, run `Install Certificates.command` once.
 
 ## How it behaves on your site
 
-* User-Agent: `geo-scan/1.2.2 (+https://github.com/AureliusClaw/geo-scan; answer-engine readiness audit)`.
+* User-Agent: `geo-scan/1.2.3 (+https://github.com/AureliusClaw/geo-scan; answer-engine readiness audit)`.
 * It reads `robots.txt` first and obeys it for its own token `geo-scan` (and `*`) on every
   later request, redirect targets included. URLs it skips are listed in the report's Notes.
 * It fetches the root page right after `robots.txt`. With a long `Crawl-delay`, optional
