@@ -26,14 +26,21 @@ Politeness: geo-scan obeys robots.txt for its own user-agent token `geo-scan` (a
 waits at least 1 s between requests (longer if Crawl-delay says so), stays on the
 audited host, caps every download and the whole scan's wall time.
 
+Safety: every address is validated before the socket opens. Hosts that are or resolve
+to loopback, RFC1918, link-local (including the cloud metadata address), unique-local,
+CGNAT, reserved, multicast or unspecified addresses are refused, redirects included;
+the validated address is the connect target, so a second DNS answer cannot move the
+request elsewhere. No proxy from the environment is used. `--allow-private` opts out.
+
 Exit codes: 0 report produced (a low score is a finding, not a failure);
-            2 scan or output failed (DNS, TLS, unreachable robots.txt, no page, or the
-              --json/--md file could not be written).
+            2 scan or output failed (DNS, TLS, unreachable robots.txt, no page, a
+              refused non-public host, or the --json/--md file could not be written).
 """
 
 import argparse
 import calendar
 import codecs
+import http.client
 import ipaddress
 import json
 import re
@@ -50,7 +57,7 @@ import zlib
 from html.parser import HTMLParser
 from types import SimpleNamespace
 
-__version__ = "1.2.3"
+__version__ = "1.2.4"
 UA_TOKEN = "geo-scan"
 UA = f"{UA_TOKEN}/{__version__} (+https://github.com/AureliusClaw/geo-scan; answer-engine readiness audit)"
 
@@ -109,18 +116,91 @@ def _site(host):
     return host[4:] if host.startswith("www.") else host
 
 
-def is_public_host(host):
-    """False if the host resolves to any private, loopback, link-local or reserved address."""
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except (socket.gaierror, UnicodeError):
-        return True  # unresolvable: the fetch itself fails with a DNS error
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0].split("%", 1)[0])
-        if getattr(ip, "ipv4_mapped", None):
-            ip = ip.ipv4_mapped
-        if not ip.is_global or ip.is_multicast:
+def _embedded_v4(ip):
+    """The IPv4 hidden inside an IPv6 address, if any (v4-mapped, 6to4, Teredo).
+
+    Without this, `2002:7f00:1::` (6to4 for 127.0.0.1) reads as a legal global
+    IPv6 address and tunnels the request to loopback.
+    """
+    if ip.version != 6:
+        return None
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        return mapped
+    packed = ip.packed
+    if packed[:2] == b"\x20\x02":                      # 2002::/16 6to4
+        return ipaddress.IPv4Address(packed[2:6])
+    if packed[:4] == b"\x20\x01\x00\x00":             # 2001::/32 Teredo
+        return ipaddress.IPv4Address(bytes(b ^ 0xFF for b in packed[12:16]))
+    return None
+
+
+def ip_is_public(ip):
+    """False for loopback, private, link-local (cloud metadata), ULA, CGNAT,
+    reserved, multicast, unspecified — and for IPv6 that embeds any of those."""
+    if ip.version == 6:
+        inner = _embedded_v4(ip)
+        if inner is not None and not ip_is_public(inner):
             return False
+    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+        return False
+    if ip.is_multicast or ip.is_unspecified:
+        return False
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        return ip_is_public(mapped)
+    # CGNAT 100.64.0.0/10 is neither private nor reserved in Python's tables,
+    # but it is not routable from an answer engine either. Test-NETs likewise.
+    return bool(ip.is_global)
+
+
+def resolve_public_ips(host, port, public_only=True):
+    """One DNS pass: every answer validated, then returned in resolution order.
+
+    The returned tuples are what `connect` dials — the validated answer IS the
+    connect target, so a second, different DNS answer (DNS rebinding) cannot move
+    the request to a private host. Raises Skipped when the host must not be dialed.
+    """
+    try:
+        literal = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        literal = None
+    if literal is not None:
+        if public_only and not ip_is_public(literal):
+            raise Skipped(f"{host} is a private/loopback/link-local address; refused")
+        return [(literal.version, str(literal))]
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError) as e:
+        raise Skipped(f"DNS lookup failed for {host}: {e}") from None
+    out, seen = [], set()
+    for info in infos:
+        raw = str(info[4][0]).split("%", 1)[0]
+        try:
+            ip = ipaddress.ip_address(raw)
+        except ValueError:
+            raise Skipped(f"{host} resolved to an unusable address {raw!r}; refused") from None
+        if public_only and not ip_is_public(ip):
+            raise Skipped(f"{host} resolves to {ip}, not a public address; refused")
+        if (ip.version, raw) not in seen:
+            seen.add((ip.version, raw))
+            out.append((ip.version, raw))
+    if not out:
+        raise Skipped(f"{host} resolved to no usable address")
+    return out
+
+
+def is_public_host(host):
+    """False if the host is an IP or resolves to any non-public address.
+
+    Unresolvable stays True: there is nothing to refuse here, the fetch itself
+    fails with a DNS error. The guard that actually decides where a request goes
+    is `resolve_public_ips()` at connect time.
+    """
+    try:
+        resolve_public_ips(host, 443)
+    except Skipped as e:
+        return "DNS lookup failed" in str(e)
     return True
 
 
@@ -171,14 +251,116 @@ class _GuardedRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+def _validated_socket(host, port, ips, timeout, source_address=None):
+    """Open the TCP socket to one of the already-validated addresses."""
+    last = None
+    for version, ip in ips:
+        sock = None
+        family = socket.AF_INET6 if version == 6 else socket.AF_INET
+        addr = (ip, port, 0, 0) if version == 6 else (ip, port)
+        try:
+            sock = socket.socket(family, socket.SOCK_STREAM)
+            sock.settimeout(socket.getdefaulttimeout() if timeout is None else timeout)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(addr)
+            return sock
+        except OSError as e:
+            last = e
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+    raise last or Skipped(f"{host}: no address to dial")
+
+
+class _ValidatedHTTPConnection(http.client.HTTPConnection):
+    """An HTTPConnection that dials the addresses the guard just approved.
+
+    The guard's DNS answer is the connect target: nothing looks the host up a
+    second time after the check, which is what closes DNS rebinding (T09).
+    """
+
+    def __init__(self, host, port=None, timeout=None, source_address=None, *, guard=None):
+        super().__init__(host, port, timeout=timeout, source_address=source_address)
+        self._guard = guard
+
+    def connect(self):
+        ips = self._guard.approve(self.host, self.port)
+        self.sock = _validated_socket(self.host, self.port, ips, self.timeout,
+                                       self.source_address)
+
+
+class _ValidatedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS to a validated IP, with SNI and certificate checks still on the hostname."""
+
+    def __init__(self, host, port=None, timeout=None, source_address=None, *,
+                 context=None, guard=None):
+        super().__init__(host, port, timeout=timeout, source_address=source_address,
+                         context=context)
+        self._guard = guard
+
+    def connect(self):
+        ips = self._guard.approve(self.host, self.port)
+        raw = _validated_socket(self.host, self.port, ips, self.timeout,
+                                self.source_address)
+        try:
+            self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
+        except Exception:
+            try:
+                raw.close()
+            except OSError:
+                pass
+            raise
+
+
+class HostGuard:
+    """Decides, per connection, which addresses geo-scan may dial.
+
+    `public_only` is on by default and the Hermes plugin never turns it off; the
+    CLI needs an explicit `--allow-private`, which says so on stderr and marks the
+    report. There is no environment variable and no config file that changes it.
+    """
+
+    def __init__(self, public_only=True, log=None):
+        self.public_only = public_only
+        self._log = log or (lambda msg: None)
+
+    def approve(self, host, port):
+        return resolve_public_ips(host, port, public_only=self.public_only)
+
+
+class _ValidatedHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, guard):
+        super().__init__()
+        self._guard = guard
+
+    def http_open(self, req):
+        return self.do_open(_ValidatedHTTPConnection, req, guard=self._guard)
+
+
+class _ValidatedHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, guard, context=None):
+        super().__init__(context=context)
+        self._guard = guard
+
+    def https_open(self, req):
+        return self.do_open(_ValidatedHTTPSConnection, req, context=self._context,
+                            guard=self._guard)
+
+
 class Scanner:
     """Paced, capped, deadline-bound, robots-obedient GETs against one site."""
 
-    def __init__(self, root, budget, public_only, log):
+    def __init__(self, root, budget, public_only=True, log=None):
         u = urllib.parse.urlparse(root)
+        if u.scheme not in ("http", "https"):
+            raise ScanError(f"unsupported scheme {u.scheme!r}: geo-scan fetches http(s) only")
         self.origin = f"{u.scheme}://{u.netloc}"
         self.host = u.hostname or ""
         self.public_only = public_only
+        self.guard = HostGuard(public_only, log)
         self.deadline = time.monotonic() + max(10, budget)
         self.delay = MIN_DELAY
         self.robots = None
@@ -186,10 +368,13 @@ class Scanner:
         self.requests = 0
         self._last = None
         self._log = log or (lambda msg: None)
-        self._public = {}
+        # ProxyHandler({}) on purpose: an HTTP_PROXY in the environment would reroute
+        # the audit through a host we never validated and never scored.
         self._opener = urllib.request.build_opener(
             _GuardedRedirect(self._guard_redirect),
-            urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+            _ValidatedHTTPHandler(self.guard),
+            _ValidatedHTTPSHandler(self.guard, context=ssl.create_default_context()),
+            urllib.request.ProxyHandler({}))
 
     def remaining(self):
         return self.deadline - time.monotonic()
@@ -202,6 +387,8 @@ class Scanner:
         why = None
         if not self.same_site(url):
             why = "other host"
+        elif urllib.parse.urlparse(url).scheme not in ("http", "https"):
+            why = f"unsupported scheme {urllib.parse.urlparse(url).scheme!r}"
         elif self.robots is not None and not self.robots.can_fetch(UA_TOKEN, url):
             why = "robots.txt disallows geo-scan"
         if why:
@@ -209,12 +396,12 @@ class Scanner:
         self._guard(url)
 
     def _guard(self, url):
+        """Pre-flight refusal with a readable message; `approve()` decides at connect."""
         host = urllib.parse.urlparse(url).hostname or ""
-        if self.public_only:
-            if host not in self._public:
-                self._public[host] = is_public_host(host)
-            if not self._public[host]:
-                raise Skipped(f"{host} resolves to a private/loopback address; refused")
+        if not host:
+            raise Skipped(f"{url}: no host to fetch")
+        self.guard.approve(host, urllib.parse.urlparse(url).port
+                           or (443 if urllib.parse.urlparse(url).scheme == "https" else 80))
 
     def same_site(self, url):
         return _site(urllib.parse.urlparse(url).hostname) == _site(self.host)
@@ -703,16 +890,28 @@ def _get_page(sc, url):
 
 # --------------------------------------------------------------------------- scan
 
-def scan(root, max_pages=DEFAULT_PAGES, budget=DEFAULT_BUDGET, public_only=False, log=None):
-    """Audit one site. Raises ScanError when nothing usable could be fetched."""
+def scan(root, max_pages=DEFAULT_PAGES, budget=DEFAULT_BUDGET, public_only=True, log=None):
+    """Audit one site. Raises ScanError when nothing usable could be fetched.
+
+    `public_only=True` is the default and the Hermes plugin never passes anything
+    else: every address is validated before the socket opens, so a host cannot
+    resolve public once and private afterwards.
+    """
     max_pages = max(1, min(MAX_PAGES, int(max_pages)))
     sc = Scanner(root, budget, public_only, log)
     if not sc.host:
         raise ScanError(f"not a URL: {root}")
-    if public_only and not is_public_host(sc.host):
-        raise ScanError(f"{sc.host} resolves to a private/loopback/link-local address; refused")
+    if public_only:
+        try:
+            sc.guard.approve(sc.host, urllib.parse.urlparse(root).port
+                             or (443 if urllib.parse.urlparse(root).scheme == "https" else 80))
+        except Skipped as e:
+            raise ScanError(str(e)) from None
     f = {"root": root, "version": __version__, "checks": [], "pages": [], "notes": sc.notes,
-         "signals": {}}
+         "signals": {"public_only": public_only}}
+    if not public_only:
+        sc.notes.append("public_only=false: this host was not required to be a public "
+                        "address; the score is not comparable with a public audit")
 
     # 1. robots.txt — read first, then obeyed for every later request (RFC 9309)
     robots_note = ""
@@ -838,6 +1037,7 @@ def scan(root, max_pages=DEFAULT_PAGES, budget=DEFAULT_BUDGET, public_only=False
         "robots_server_error": rp.disallow_all,
         "blocked_search_agents": s_blocked, "partial_search_agents": s_partial,
         "blocked_training_agents": t_blocked, "gate": gate,
+        "public_only": sc.public_only,
     }
 
     # 6. pages (the root was fetched in step 2)
@@ -1061,6 +1261,9 @@ def main():
     ap.add_argument("--json", dest="json_out", help="write JSON findings here")
     ap.add_argument("--md", dest="md_out", help="write Markdown report here")
     ap.add_argument("--quiet", action="store_true", help="no output; exit code only")
+    ap.add_argument("--allow-private", dest="allow_private", action="store_true",
+                    help="dial private/loopback/link-local addresses too (staging boxes); "
+                         "off by default, and the report is marked as not a public audit")
     ap.add_argument("--version", action="version", version=f"geo-scan {__version__}")
     args = ap.parse_args()
 
@@ -1071,9 +1274,13 @@ def main():
     pages = max(1, min(MAX_PAGES, args.pages))
     if pages != args.pages and not args.quiet:
         print(f"geo-scan: --pages clamped to {pages} (allowed 1-{MAX_PAGES})", file=sys.stderr)
+    if args.allow_private and not args.quiet:
+        print("geo-scan: --allow-private is set: this run may dial hosts outside the public "
+              "internet, so its score is not comparable with a public audit", file=sys.stderr)
     log = None if args.quiet else (lambda msg: print(msg, file=sys.stderr, flush=True))
     try:
-        f = scan(root, max_pages=pages, budget=args.budget, log=log)
+        f = scan(root, max_pages=pages, budget=args.budget, log=log,
+                 public_only=not args.allow_private)
     except ScanError as e:
         if not args.quiet:
             print(f"geo-scan: {e}", file=sys.stderr)

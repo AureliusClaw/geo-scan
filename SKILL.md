@@ -26,9 +26,9 @@ so the report is checkable rather than advisory.
 - "Score how quotable this site is" for a given public URL.
 - Before and after a content change, to measure whether answer-engine readiness moved.
 
-Not for: private, intranet or loopback hosts (refused); JS-rendered SPAs (no JS
-rendering, so the page reads as near-empty); SEO keyword research; writing content to
-outrank competitors.
+Not for: private, intranet or loopback hosts (**refused before any socket opens**, see
+"Security"); JS-rendered SPAs (no JS rendering, so the page reads as near-empty); SEO
+keyword research; writing content to outrank competitors.
 
 **Language coverage:** quotability scoring matches definitional, comparison and
 question phrases in **English and German** (German patterns added in 1.2.3 after a
@@ -50,11 +50,27 @@ python3 geo_scan.py https://example.com --quiet              # no output, exit c
 
 Exit 0: a report was produced. A low score is a finding, not a failure. Exit 2: nothing
 usable could be fetched (DNS or TLS failure, unreachable robots.txt, robots.txt
-disallows `geo-scan`, or no analysable page). The reason goes to stderr unless `--quiet`.
+disallows `geo-scan`, a refused non-public host, or no analysable page). The reason goes
+to stderr unless `--quiet`.
 
 Inside a Hermes session with the plugin installed, the same audit is the
 `geo_scan` tool: `{ "url": "https://example.com", "pages": 12, "save": true }`.
-The plugin refuses private, loopback and link-local hosts and stops after 90 s.
+The plugin always runs with `public_only=True` and stops after 90 s.
+
+## Security
+
+geo-scan is a read-only HTTP(S) client pointed at one public host. What enforces that:
+
+| rule | how |
+|---|---|
+| public addresses only | every address is validated **at connect time** and the validated address is the address the socket opens — a second DNS answer (rebinding) cannot move the request |
+| refused ranges | loopback, RFC 1918, link-local incl. `169.254.169.254`, unique-local, CGNAT, reserved, multicast, unspecified; IPv6 that embeds any of them (v4-mapped, 6to4, Teredo) too |
+| no proxy | the opener is built with proxies off; `HTTP_PROXY`/`ALL_PROXY` cannot reroute the audit |
+| scheme | `http:` and `https:` only |
+| scope | stays on the audited host (`www.`/apex), redirects re-checked |
+| bypass | `--allow-private` only, typed on the command line, never an environment variable; it prints a warning and records `public_only: false` in the report. The Hermes plugin never passes it |
+
+Refused hosts exit 2 with the refused address in the message.
 
 ## What it checks (100 points; the weights are our judgement, not validated against citations)
 

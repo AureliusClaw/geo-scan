@@ -11,7 +11,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
-__version__ = "1.2.3"
+__version__ = "1.2.4"
 
 _MAX_PAGES = 25
 _DEFAULT_PAGES = 8
@@ -55,8 +55,10 @@ def _handle_geo_scan(params: dict) -> str:
     pages = max(1, min(_MAX_PAGES, pages))
 
     try:
-        # public_only: refuse private/loopback/link-local hosts (redirects included), so a
-        # prompt-injected agent cannot use the tool to probe the LAN
+        # public_only=True and never anything else: every address is validated at
+        # connect time and the validated address is what the socket dials, so a
+        # prompt-injected agent cannot use this tool to probe the LAN — not by
+        # literal IP, not by a host that rebinds to one, not through a proxy.
         findings = engine.scan(root, max_pages=pages, budget=_BUDGET_SECONDS, public_only=True)
     except Exception as e:  # noqa: BLE001
         return json.dumps({"ok": False, "error": f"scan failed for {root}: {e}",

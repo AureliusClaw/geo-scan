@@ -5,7 +5,7 @@ One file. No API key. No account. No dependencies beyond the Python standard lib
 `geo_scan.py` reads a public website the way an answer engine's crawler would and scores
 **how readily engines such as ChatGPT search, Perplexity, Claude, Gemini / Google AI
 Overviews and Copilot can fetch, parse and quote it**, on a 0–100 scale. It then lists
-the changes that would raise the score. Version 1.2.3.
+the changes that would raise the score. Version 1.2.4.
 
 **Language coverage:** quotability scoring matches definitional, comparison and question
 phrases in **English and German**. German patterns landed in 1.2.3, after a 45-site
@@ -84,21 +84,44 @@ TLS. On macOS with a python.org Python, run `Install Certificates.command` once.
   groups name the same agent, only the first counts. Only the audited host's robots.txt
   is read: it is applied to every sampled path, including `www.` / apex variants that
   would strictly have their own robots.txt.
-* **Quotability heuristics are English-only (documented v1 limitation).** Non-English
-  pages score lower, near zero, on the phrase check; the report notes the page language
-  when it is not English. The fixed `Accept-Language` header is English-first.
+* **Quotability heuristics are English and German, not every language.** The phrase list
+  covers both (German since 1.2.3); other languages score lower on that axis, often near
+  zero, and the report notes the page language. The fixed `Accept-Language` header is
+  English-first. A short service page with no definitional prose also scores 0 there,
+  which is a real gap for answer engines and not only a measurement artefact.
 * **No JavaScript rendering.** Pages that are almost empty and script-heavy are flagged as
   probably JS-rendered. Most AI crawlers do not render JS either.
 * **Single automated sample, no human review.** The score moves with the sample, so use the
   same `--pages` value for before/after comparisons. Read the Notes section.
 
+## What it will not connect to
+
+The audit dials the audited host and nothing else, and it dials only public addresses:
+
+* every address is validated **at connect time**, and the validated address is the address
+  the socket opens — a host that answers publicly to the check and privately to the
+  connection (DNS rebinding) does not get a socket;
+* loopback, RFC 1918, link-local (including the cloud metadata address `169.254.169.254`),
+  unique-local, CGNAT, reserved, multicast and unspecified addresses are refused, literal
+  IPs included, and IPv6 that embeds one of them (6to4, Teredo, v4-mapped) is refused too;
+* **no proxy** — an `HTTP_PROXY`/`ALL_PROXY` in the environment would reroute the audit
+  through a host this tool never validated, so the opener is built with proxies off;
+* only `http:` and `https:` — no `file:`, no `ftp:`, no `data:`;
+* redirects are re-checked before they are followed, and stay on the audited host.
+
+`--allow-private` opts out of the address rule (staging boxes, localhost demos). It is the
+only way past the guard, it has to be typed on the command line, there is no environment
+variable for it, it says so on stderr, and the report records `public_only: false` so a
+non-public run is never mistaken for one. The Hermes plugin never passes it.
+
 ## Hermes plugin
 
 The repo root is also a Hermes plugin (`plugin.yaml`, `__init__.py`). It registers the
-`geo_scan` tool with a 90 s budget, and it refuses hosts that resolve to private,
-loopback or link-local addresses, redirects included. Scanning is read-only; with
-`save=true` the tool also writes a Markdown and a JSON report to `out_dir` (default
-`~/.hermes/cache/scratch/geo-scan`). The scoring engine is always the `geo_scan.py` next
-to `__init__.py`; it cannot be overridden by environment variable or fallback path.
+`geo_scan` tool with a 90 s budget, always with `public_only=True`: hosts that are or
+resolve to private, loopback or link-local addresses are refused, redirects included.
+Scanning is read-only; with `save=true` the tool also writes a Markdown and a JSON report
+to `out_dir` (default `~/.hermes/cache/scratch/geo-scan`). The scoring engine is always
+the `geo_scan.py` next to `__init__.py`; it cannot be overridden by environment variable or
+fallback path.
 
 MIT licensed.
