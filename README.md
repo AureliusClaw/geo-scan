@@ -5,7 +5,7 @@ One file. No API key. No account. No dependencies beyond the Python standard lib
 `geo_scan.py` reads a public website the way an answer engine's crawler would and scores
 **how readily engines such as ChatGPT search, Perplexity, Claude, Gemini / Google AI
 Overviews and Copilot can fetch, parse and quote it**, on a 0–100 scale. It then lists
-the changes that would raise the score. Version 1.2.4.
+the changes that would raise the score. Version 1.2.5.
 
 **Language coverage:** quotability scoring matches definitional, comparison and question
 phrases in **English and German**. German patterns landed in 1.2.3, after a 45-site

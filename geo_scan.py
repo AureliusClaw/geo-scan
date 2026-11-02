@@ -57,7 +57,7 @@ import zlib
 from html.parser import HTMLParser
 from types import SimpleNamespace
 
-__version__ = "1.2.4"
+__version__ = "1.2.5"
 UA_TOKEN = "geo-scan"
 UA = f"{UA_TOKEN}/{__version__} (+https://github.com/AureliusClaw/geo-scan; answer-engine readiness audit)"
 
@@ -1141,7 +1141,7 @@ def scan(root, max_pages=DEFAULT_PAGES, budget=DEFAULT_BUDGET, public_only=True,
                         "score": round(quot_pts, 1), "max": 20,
                         "status": "ok" if quot_pts >= 11 else "thin",
                         "evidence": f"{qh} definitional phrases, {sh} hard figures, tables on {tb}/{n} "
-                                    f"pages · English phrase lists only"})
+                                    f"pages · phrase lists: English + German"})
 
     fresh_pts, fresh_ev = 0.0, ""
     newest = _median(page_newest)
@@ -1160,10 +1160,10 @@ def scan(root, max_pages=DEFAULT_PAGES, budget=DEFAULT_BUDGET, public_only=True,
                         "score": float(fresh_pts), "max": 10,
                         "status": "ok" if fresh_pts >= 7 else "thin", "evidence": fresh_ev})
 
-    langs = sorted({p_["lang"].split("-")[0] for p_ in pages if p_["lang"]} - {"en"})
+    langs = sorted({p_["lang"].split("-")[0] for p_ in pages if p_["lang"]} - {"en", "de"})
     if langs:
-        sc.notes.append(f"page language {', '.join(langs)}: the quotability phrase lists are "
-                        "English-only, so that axis under-scores non-English pages")
+        sc.notes.append(f"page language {', '.join(langs)}: the quotability phrase lists cover "
+                        "English and German, so that axis under-scores pages in other languages")
 
     total = sum(c["score"] for c in f["checks"])
     if gate:
