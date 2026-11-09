@@ -5,7 +5,7 @@ One file. No API key. No account. No dependencies beyond the Python standard lib
 `geo_scan.py` reads a public website the way an answer engine's crawler would and scores
 **how readily engines such as ChatGPT search, Perplexity, Claude, Gemini / Google AI
 Overviews and Copilot can fetch, parse and quote it**, on a 0–100 scale. It then lists
-the changes that would raise the score. Version 1.2.5.
+the changes that would raise the score. Version 1.2.6.
 
 **Language coverage:** quotability scoring matches definitional, comparison and question
 phrases in **English and German**. German patterns landed in 1.2.3, after a 45-site
@@ -44,22 +44,32 @@ Grades: A ≥ 80 · B ≥ 65 · C ≥ 50 · D ≥ 35 · F below.
 Exit 0 means a report was produced; a low score is a finding, not a failure. Exit 2 means
 the scan or its output failed. That covers a DNS failure, a TLS certificate error, an
 unreachable robots.txt, a robots.txt that disallows `geo-scan`, no analysable page, and a
-`--json` / `--md` file that could not be written.
+`--json` / `--md` file that could not be written. Report destinations are confined:
+`--json`/`--md` name a file inside `--out-dir` (default `out/`), and an absolute path, a
+`..` escape, an existing symlink, or an `out_dir` outside the working directory is refused.
 On a TLS certificate error the message says so: geo-scan never falls back to unverified
 TLS. On macOS with a python.org Python, run `Install Certificates.command` once.
 
 ## How it behaves on your site
 
-* User-Agent: `geo-scan/1.2.3 (+https://github.com/AureliusClaw/geo-scan; answer-engine readiness audit)`.
+* User-Agent: `geo-scan/<version>` — currently `geo-scan/1.2.6 (+https://github.com/AureliusClaw/geo-scan; answer-engine readiness audit)`.
 * It reads `robots.txt` first and obeys it for its own token `geo-scan` (and `*`) on every
-  later request, redirect targets included. URLs it skips are listed in the report's Notes.
+  later request, redirect targets included. Matching follows RFC 9309: `*` wildcards, `$`
+  end anchors, longest match wins with `Allow` taking ties, the most specific matching
+  `User-agent` record governs, `Crawl-delay` is honoured. URLs it skips are listed in the
+  report's Notes.
+* It fetches http(s) and nothing else. `fetch()` checks the scheme before any handler is
+  reached and the opener registers no `FTPHandler`/`FileHandler`/`DataHandler`, so a
+  `Sitemap: ftp://…` line in a robots.txt can neither open an FTP session nor read a
+  local file. `--allow-private` widens http(s) addresses to private ranges; it never
+  re-enables another scheme.
 * It fetches the root page right after `robots.txt`. With a long `Crawl-delay`, optional
   requests (child sitemaps after the first, `llms-full.txt`) are skipped when they would
   leave too little time for pages; the Notes say so.
 * It waits at least 1 s between requests, or longer if `Crawl-delay` asks for it. It stays
   on the audited host (with or without `www.`) and does not follow redirects off it. Downloads are capped (512 KiB robots.txt,
   1 MB llms.txt, 5 MB per sitemap, 2 MB per page), and a whole scan is capped at 120 s
-  (`--budget`).
+  (`--budget`, clamped to 10–120 s — the ceiling cannot be raised from the command line).
 * At most 25 pages per run (`--pages`, default 8). A typical run makes 5–35 requests.
 * **Opt out:** add this to your robots.txt:
 
@@ -120,7 +130,9 @@ The repo root is also a Hermes plugin (`plugin.yaml`, `__init__.py`). It registe
 `geo_scan` tool with a 90 s budget, always with `public_only=True`: hosts that are or
 resolve to private, loopback or link-local addresses are refused, redirects included.
 Scanning is read-only; with `save=true` the tool also writes a Markdown and a JSON report
-to `out_dir` (default `~/.hermes/cache/scratch/geo-scan`). The scoring engine is always
+into `out_dir` (default `~/.hermes/cache/scratch/geo-scan`), which must resolve inside
+`~/.hermes/cache` or the working directory — `save` cannot be pointed anywhere else.
+The scoring engine is always
 the `geo_scan.py` next to `__init__.py`; it cannot be overridden by environment variable or
 fallback path.
 

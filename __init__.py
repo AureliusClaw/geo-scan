@@ -11,11 +11,36 @@ import time
 import urllib.parse
 from pathlib import Path
 
-__version__ = "1.2.5"
+__version__ = "1.2.6"
 
 _MAX_PAGES = 25
 _DEFAULT_PAGES = 8
 _BUDGET_SECONDS = 90  # the scan runs synchronously inside an agent turn
+
+
+def _confined_out_dir(raw: str | None) -> Path:
+    """Resolve out_dir and keep it inside ~/.hermes/cache or the working directory.
+
+    The tool's contract is 'writes two report files under out_dir'. The caller picks
+    out_dir; this keeps that pick inside the two places an agent session legitimately
+    writes to, so a prompt-injected out_dir cannot drop a file into ~/.ssh or onto a
+    git-tracked tree the user never named.
+    """
+    cwd = Path.cwd().resolve()
+    cache = (Path.home() / ".hermes" / "cache").resolve()
+    default = cache / "scratch" / "geo-scan"
+    if not raw:
+        return default
+    if ".." in Path(raw).parts:
+        raise ValueError(f"out_dir must not contain '..': {raw}")
+    target = Path(raw).expanduser()
+    if target.is_symlink():
+        raise ValueError(f"out_dir must not be a symlink: {raw}")
+    target = target.resolve()
+    for root in (cwd, cache):
+        if target == root or root in target.parents:
+            return target
+    raise ValueError(f"out_dir must be under {cache} or the working directory ({cwd})")
 
 
 def _load_engine():
@@ -91,8 +116,7 @@ def _handle_geo_scan(params: dict) -> str:
 
     if params.get("save"):
         try:
-            out_dir = Path(params.get("out_dir")
-                           or Path.home() / ".hermes" / "cache" / "scratch" / "geo-scan")
+            out_dir = _confined_out_dir(params.get("out_dir"))
             out_dir.mkdir(parents=True, exist_ok=True)
             slug = urllib.parse.urlparse(root).netloc.replace("www.", "_")
             stamp = time.strftime("%Y%m%d-%H%M")
@@ -117,9 +141,11 @@ def register(ctx):
         "Claude / Gemini / AI Overviews): 0-100 across crawler access for search agents, "
         "machine readability, snippet permissions, structure, quotability and freshness, "
         "each with its evidence, plus a prioritised fix list. No API key. Scanning is "
-        "read-only: robots.txt-obedient HTTP GETs at about one per second, max 90 s, "
-        "public hosts only. When save=true the tool additionally writes two report "
-        "files (Markdown + JSON) to out_dir (default ~/.hermes/cache/scratch/geo-scan)."
+        "read-only: robots.txt-obedient HTTP(S) GETs at one per second or the site's "
+        "Crawl-delay, max 90 s, public hosts only; ftp:, file: and every other scheme are "
+        "refused before a socket opens. When save=true the tool additionally writes two "
+        "report files (Markdown + JSON) into out_dir, which must sit under "
+        "~/.hermes/cache or the working directory (default ~/.hermes/cache/scratch/geo-scan)."
     )
     ctx.register_tool(
         name="geo_scan",

@@ -51,19 +51,22 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import urllib.robotparser
 import xml.etree.ElementTree as ET
 import zlib
 from html.parser import HTMLParser
+from pathlib import Path
 from types import SimpleNamespace
 
-__version__ = "1.2.5"
+__version__ = "1.2.6"
 UA_TOKEN = "geo-scan"
 UA = f"{UA_TOKEN}/{__version__} (+https://github.com/AureliusClaw/geo-scan; answer-engine readiness audit)"
 
 MAX_PAGES = 25
 DEFAULT_PAGES = 8
 DEFAULT_BUDGET = 120          # seconds for the whole scan, every request included
+MAX_BUDGET = 120              # --budget is clamped to this; the CLI never runs longer
+MIN_BUDGET = 10
+DEFAULT_OUT_DIR = "out"      # --json/--md write here, and nowhere else
 MIN_DELAY = 1.0               # seconds between requests; Crawl-delay raises it
 SOCKET_TIMEOUT = 15
 CAP_ROBOTS = 512 * 1024       # RFC 9309 lets crawlers stop at 500 KiB
@@ -361,20 +364,33 @@ class Scanner:
         self.host = u.hostname or ""
         self.public_only = public_only
         self.guard = HostGuard(public_only, log)
-        self.deadline = time.monotonic() + max(10, budget)
+        # the ceiling is the ceiling, here and not only in scan(): whoever constructs
+        # a Scanner gets the declared maximum, never a caller-inflated one
+        budget = max(MIN_BUDGET, min(MAX_BUDGET, float(budget)))
+        self.deadline = time.monotonic() + budget
         self.delay = MIN_DELAY
-        self.robots = None
+        self.robots: "Robots | None" = None   # set by scan(): the Robots matcher
         self.notes = []
         self.requests = 0
         self._last = None
         self._log = log or (lambda msg: None)
         # ProxyHandler({}) on purpose: an HTTP_PROXY in the environment would reroute
         # the audit through a host we never validated and never scored.
-        self._opener = urllib.request.build_opener(
-            _GuardedRedirect(self._guard_redirect),
-            _ValidatedHTTPHandler(self.guard),
-            _ValidatedHTTPSHandler(self.guard, context=ssl.create_default_context()),
-            urllib.request.ProxyHandler({}))
+        #
+        # The opener is assembled by hand instead of build_opener(): the default
+        # factory also registers FTPHandler, FileHandler and DataHandler, and those
+        # dial/read outside the guarded HTTP(S) connections — `Sitemap: ftp://host/`
+        # in a robots.txt got anonymous FTP with an attacker-chosen path, and
+        # `file://localhost/...` read the local disk. Only http(s) handlers live here.
+        self._opener = urllib.request.OpenerDirector()
+        for handler in (urllib.request.ProxyHandler({}),
+                        urllib.request.UnknownHandler(),
+                        _ValidatedHTTPHandler(self.guard),
+                        _ValidatedHTTPSHandler(self.guard, context=ssl.create_default_context()),
+                        _GuardedRedirect(self._guard_redirect),
+                        urllib.request.HTTPDefaultErrorHandler(),
+                        urllib.request.HTTPErrorProcessor()):
+            self._opener.add_handler(handler)
 
     def remaining(self):
         return self.deadline - time.monotonic()
@@ -407,6 +423,11 @@ class Scanner:
         return _site(urllib.parse.urlparse(url).hostname) == _site(self.host)
 
     def fetch(self, url, cap, obey=True):
+        # Scheme first, before any handler is reached: ftp:, file:, data:, gopher: all
+        # have their own urllib handlers and none of them pass through the address guard.
+        scheme = urllib.parse.urlparse(url).scheme.lower()
+        if scheme not in ("http", "https"):
+            raise Skipped(f"unsupported scheme {scheme!r}: geo-scan fetches http(s) only")
         if not self.same_site(url):
             raise Skipped("other host; geo-scan stays on the audited host")
         if obey and self.robots is not None and not self.robots.can_fetch(UA_TOKEN, url):
@@ -461,25 +482,133 @@ class Scanner:
 
 # --------------------------------------------------------------------------- robots.txt
 
-def load_robots(text):
-    """stdlib robotparser, made closer to RFC 9309.
+def _pattern_to_rx(pattern):
+    """RFC 9309 path pattern -> regex: `*` matches any sequence, a trailing `$` anchors."""
+    anchor = pattern.endswith("$")
+    body = pattern[:-1] if anchor else pattern
+    rx = ".*".join(re.escape(p) for p in body.split("*"))
+    return re.compile("^" + rx + ("$" if anchor else ""))
 
-    * a trailing `*` is dropped (`Disallow: /*` == `Disallow: /`); other wildcards stay
-      literal and therefore never match (they read as "allowed");
-    * rules in each group are sorted longest-path-first, `Allow` winning ties, so the
-      parser's first-match gives RFC 9309's longest-match result.
+
+def _robot_path(url):
+    """The absolute path and query a robots.txt rule is matched against (RFC 9309 2.2)."""
+    u = urllib.parse.urlparse(url)
+    path = u.path or "/"
+    return f"{path}?{u.query}" if u.query else path
+
+
+class Robots:
+    """RFC 9309 robots.txt matcher.
+
+    Replaces `urllib.robotparser.RobotFileParser`, whose matcher treats an internal
+    `*` and a trailing `$` as literal characters: `Disallow: /*.pdf$` and
+    `Disallow: /a/*/c` both allowed the URLs they name. Here:
+
+    * `*` matches any sequence of characters, `$` anchors the end of path-and-query;
+    * the longest match wins, `Allow` beats `Disallow` when two rules match the same
+      length (RFC 9309 2.2.2.3);
+    * the record set used is the one with the most specific matching `User-agent`
+      token (`*` as fallback), records with equal tokens merged;
+    * `Crawl-delay` is honoured, taking the longest delay among matching records.
     """
-    lines = []
-    for line in text.splitlines():
-        m = re.match(r"(\s*(?:dis)?allow\s*:\s*)(\S*)(.*)$", line, re.I)
-        if m and m.group(2).endswith("*"):
-            line = m.group(1) + (m.group(2).rstrip("*") or "/") + m.group(3)
-        lines.append(line)
-    rp = urllib.robotparser.RobotFileParser()
-    rp.parse(lines)
-    for entry in rp.entries + ([rp.default_entry] if rp.default_entry else []):
-        entry.rulelines.sort(key=lambda rl: (-len(rl.path), not rl.allowance))
-    return rp
+
+    def __init__(self, groups=None, sitemaps=None, allow_all=False, disallow_all=False):
+        self.groups = groups or []        # [(tokens, [(allow, regex)], delay)]
+        self.sitemaps = list(sitemaps or [])
+        self.allow_all = allow_all
+        self.disallow_all = disallow_all
+
+    # -- API used by the rest of geo-scan (kept robotparser-compatible) -------------
+    def site_maps(self):
+        return self.sitemaps or None
+
+    def _matches(self, token, agent):
+        token, agent = token.lower(), (agent or "").lower()
+        return token == "*" or (token != "" and token in agent)
+
+    def _record_for(self, agent):
+        """(rules, delay) of the most specific matching record set, else None."""
+        best_len, rules, delay = -1, [], None
+        for tokens, group_rules, group_delay in self.groups:
+            hit = [t for t in tokens if self._matches(t, agent)]
+            if not hit:
+                continue
+            length = max(len(t) for t in hit)
+            if length > best_len:
+                best_len, rules, delay = length, list(group_rules), group_delay
+            elif length == best_len:
+                rules += group_rules
+                if group_delay:
+                    delay = group_delay if delay is None else max(delay, group_delay)
+        return (rules, delay) if best_len >= 0 else (None, None)
+
+    def can_fetch(self, agent, url):
+        if self.allow_all:
+            return True
+        if self.disallow_all:
+            return False
+        found = self._record_for(agent)
+        if found[0] is None:
+            return True
+        path = _robot_path(url)
+        candidates = [path]
+        unquoted = urllib.parse.unquote(path)
+        if unquoted != path:
+            candidates.append(unquoted)
+        best, allowed = -1, True
+        for allow, rx in found[0]:
+            for cand in candidates:
+                m = rx.match(cand)
+                if m and (m.end() > best or (m.end() == best and allow)):
+                    best, allowed = m.end(), allow
+        return allowed if best >= 0 else True
+
+    def crawl_delay(self, agent):
+        if self.allow_all or self.disallow_all:
+            return None
+        return self._record_for(agent)[1]
+
+
+def load_robots(text):
+    """Parse robots.txt into a `Robots` matcher (RFC 9309 group and rule syntax)."""
+    groups, sitemaps = [], []
+    tokens, rules, delay = [], [], None
+
+    def flush():
+        if tokens:
+            groups.append((tokens, rules, delay))
+
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip().lower()
+        value = value.strip()
+        if key == "user-agent":
+            if rules and tokens:          # a new record starts after the rules
+                flush()
+                tokens, rules, delay = [], [], None
+            if value:
+                tokens.append(value)
+        elif key in ("disallow", "allow"):
+            if not value:
+                continue                  # `Disallow:` alone means "allow everything"
+            rules.append((key == "allow", _pattern_to_rx(value)))
+        elif key == "crawl-delay":
+            try:
+                d = float(value)
+                if d > 0:
+                    delay = d if delay is None else max(delay, d)
+            except ValueError:
+                pass
+        elif key == "sitemap":
+            if value:
+                sitemaps.append(value)
+    flush()
+    return Robots(groups, sitemaps)
 
 
 def agent_access(rp, root, samples):
@@ -898,6 +1027,9 @@ def scan(root, max_pages=DEFAULT_PAGES, budget=DEFAULT_BUDGET, public_only=True,
     resolve public once and private afterwards.
     """
     max_pages = max(1, min(MAX_PAGES, int(max_pages)))
+    # The declared ceiling is the ceiling: a caller cannot stretch the scan past
+    # MAX_BUDGET, and the plugin asks for 90 s of that.
+    budget = max(MIN_BUDGET, min(MAX_BUDGET, float(budget)))
     sc = Scanner(root, budget, public_only, log)
     if not sc.host:
         raise ScanError(f"not a URL: {root}")
@@ -915,7 +1047,7 @@ def scan(root, max_pages=DEFAULT_PAGES, budget=DEFAULT_BUDGET, public_only=True,
 
     # 1. robots.txt — read first, then obeyed for every later request (RFC 9309)
     robots_note = ""
-    rp = urllib.robotparser.RobotFileParser()
+    rp = Robots(disallow_all=True)   # until the file says otherwise: fetch nothing
     try:
         r = sc.fetch(sc.origin + "/robots.txt", CAP_ROBOTS, obey=False)
         rp = load_robots(r.text)
@@ -1250,6 +1382,36 @@ def to_md(f):
     return "\n".join(lines) + "\n"
 
 
+def _report_path(out_dir, name, base=None):
+    """Confine a caller-named report to out_dir; refuse traversal and symlinks.
+
+    out_dir itself must live inside `base` (the working directory by default) and must
+    not be a symlink; the report name may be bare (`report.json`) or relative inside
+    out_dir (`2026/report.json`). An absolute name, a `..` escape, or a target that is
+    already a symlink is refused: the contract says writes go under out_dir, so that
+    is what the code does.
+    """
+    base = Path(base or Path.cwd()).resolve()
+    if ".." in Path(out_dir).parts or ".." in Path(name).parts:
+        raise ScanError("'..' is not allowed in --out-dir or a report name")
+    root = Path(out_dir).expanduser()
+    if root.is_symlink():
+        raise ScanError(f"--out-dir must not be a symlink: {out_dir}")
+    root = root.resolve()
+    if root != base and base not in root.parents:
+        raise ScanError(f"--out-dir must be inside the working directory ({base}): {out_dir}")
+    given = Path(name).expanduser()
+    if given.is_absolute():
+        raise ScanError(f"report name must be inside --out-dir ({out_dir}), not absolute: {name}")
+    target = (root / given).resolve()
+    if target != root and root not in target.parents:
+        raise ScanError(f"report name escapes --out-dir ({out_dir}): {name}")
+    if target.is_symlink():
+        raise ScanError(f"refusing to write through an existing symlink: {name}")
+    root.mkdir(parents=True, exist_ok=True)
+    return target
+
+
 def main():
     ap = argparse.ArgumentParser(description="Answer-engine readiness audit (no API key).")
     ap.add_argument("url", nargs="?", help="site to audit")
@@ -1257,13 +1419,20 @@ def main():
     ap.add_argument("--pages", type=int, default=DEFAULT_PAGES,
                     help=f"pages to sample, 1-{MAX_PAGES} (default {DEFAULT_PAGES})")
     ap.add_argument("--budget", type=int, default=DEFAULT_BUDGET,
-                    help=f"max seconds for the whole scan (default {DEFAULT_BUDGET})")
-    ap.add_argument("--json", dest="json_out", help="write JSON findings here")
-    ap.add_argument("--md", dest="md_out", help="write Markdown report here")
+                    help=f"max seconds for the whole scan (default {DEFAULT_BUDGET}, "
+                         f"hard ceiling {MAX_BUDGET})")
+    ap.add_argument("--json", dest="json_out", metavar="NAME",
+                    help="write the JSON report as this name inside --out-dir")
+    ap.add_argument("--md", dest="md_out", metavar="NAME",
+                    help="write the Markdown report as this name inside --out-dir")
+    ap.add_argument("--out-dir", dest="out_dir", default=DEFAULT_OUT_DIR,
+                    help=f"directory reports may be written to (default {DEFAULT_OUT_DIR}/); "
+                         "--json/--md cannot point outside it")
     ap.add_argument("--quiet", action="store_true", help="no output; exit code only")
     ap.add_argument("--allow-private", dest="allow_private", action="store_true",
-                    help="dial private/loopback/link-local addresses too (staging boxes); "
-                         "off by default, and the report is marked as not a public audit")
+                    help="dial private/loopback/link-local HTTP(S) addresses too (staging "
+                         "boxes); off by default, and the report is marked as not a public "
+                         "audit. Never re-enables ftp:, file: or any other scheme")
     ap.add_argument("--version", action="version", version=f"geo-scan {__version__}")
     args = ap.parse_args()
 
@@ -1274,12 +1443,17 @@ def main():
     pages = max(1, min(MAX_PAGES, args.pages))
     if pages != args.pages and not args.quiet:
         print(f"geo-scan: --pages clamped to {pages} (allowed 1-{MAX_PAGES})", file=sys.stderr)
+    budget = max(MIN_BUDGET, min(MAX_BUDGET, args.budget))
+    if budget != args.budget and not args.quiet:
+        print(f"geo-scan: --budget clamped to {budget} s (allowed "
+              f"{MIN_BUDGET}-{MAX_BUDGET})", file=sys.stderr)
     if args.allow_private and not args.quiet:
         print("geo-scan: --allow-private is set: this run may dial hosts outside the public "
-              "internet, so its score is not comparable with a public audit", file=sys.stderr)
+              "internet over http(s), so its score is not comparable with a public audit",
+              file=sys.stderr)
     log = None if args.quiet else (lambda msg: print(msg, file=sys.stderr, flush=True))
     try:
-        f = scan(root, max_pages=pages, budget=args.budget, log=log,
+        f = scan(root, max_pages=pages, budget=budget, log=log,
                  public_only=not args.allow_private)
     except ScanError as e:
         if not args.quiet:
@@ -1295,11 +1469,15 @@ def main():
         if args.json_out:
             slim = {k: v for k, v in f.items() if k != "pages"}
             slim["pages"] = [{k: v for k, v in p_.items() if k != "title"} for p_ in f["pages"]]
-            with open(args.json_out, "w", encoding="utf-8") as fh:
+            with open(_report_path(args.out_dir, args.json_out), "w", encoding="utf-8") as fh:
                 json.dump(slim, fh, indent=1)
         if args.md_out:
-            with open(args.md_out, "w", encoding="utf-8") as fh:
+            with open(_report_path(args.out_dir, args.md_out), "w", encoding="utf-8") as fh:
                 fh.write(to_md(f))
+    except ScanError as e:
+        if not args.quiet:
+            print(f"geo-scan: {e}", file=sys.stderr)
+        return 2
     except OSError as e:
         if not args.quiet:
             print(f"geo-scan: cannot write {e.filename or 'output'}: {e.strerror or e}",

@@ -1,11 +1,11 @@
 ---
 name: geo-scan
 description: Audit the answer-engine readiness (ChatGPT, Perplexity, Claude, Gemini, AI Overviews) of one public website URL and produce a prioritised fix list. Use when someone gives a public site or page URL and asks whether AI engines can crawl, cite or quote it, or wants its robots.txt / snippet-permission / schema check or quotability score. Not for - private or intranet hosts, JS-rendered SPAs, SEO keyword research, writing content to beat competitors. English and German quotability scoring. No API key, no account, Python stdlib only.
-version: 1.2.3
+version: 1.2.6
 license: MIT
 permissions:
-  network: outbound HTTP(S) GET only, public hosts, robots.txt obeyed, max 25 pages / 90 s
-  filesystem: read plugin dir; write only report files under out_dir when save=true
+  network: outbound HTTP(S) GET only; public hosts by default — ftp:, file: and every other scheme are refused before a socket opens; robots.txt obeyed with RFC 9309 matching (wildcards, end anchors, Crawl-delay); max 25 pages; hard 120 s ceiling, the Hermes plugin asks for 90 s
+  filesystem: read plugin dir; write only the named report files under out_dir (--out-dir, which must sit inside the working directory; the plugin confines it to ~/.hermes/cache or cwd), and only when save=true
   no_credentials: reads, sends and stores no credentials or secrets
 metadata:
   author: Aurelius
@@ -44,9 +44,15 @@ notes the page language. The scan sends a fixed
 ```bash
 python3 geo_scan.py https://example.com                      # report to stdout
 python3 geo_scan.py --url https://example.com --pages 20 \
-        --md audit.md --json audit.json                      # save both
+        --md audit.md --json audit.json                      # both, into out/
+python3 geo_scan.py https://example.com --out-dir reports \
+        --md audit.md                                        # a different out_dir, inside cwd
 python3 geo_scan.py https://example.com --quiet              # no output, exit code only
 ```
+
+`--json`/`--md` name a file **inside `--out-dir`** (default `out/`): an absolute path,
+a `..` escape or an existing symlink is refused with exit 2. `--budget` is clamped to
+10–120 s and `--pages` to 1–25 — the declared ceiling is the ceiling.
 
 Exit 0: a report was produced. A low score is a finding, not a failure. Exit 2: nothing
 usable could be fetched (DNS or TLS failure, unreachable robots.txt, robots.txt
@@ -66,9 +72,11 @@ geo-scan is a read-only HTTP(S) client pointed at one public host. What enforces
 | public addresses only | every address is validated **at connect time** and the validated address is the address the socket opens — a second DNS answer (rebinding) cannot move the request |
 | refused ranges | loopback, RFC 1918, link-local incl. `169.254.169.254`, unique-local, CGNAT, reserved, multicast, unspecified; IPv6 that embeds any of them (v4-mapped, 6to4, Teredo) too |
 | no proxy | the opener is built with proxies off; `HTTP_PROXY`/`ALL_PROXY` cannot reroute the audit |
-| scheme | `http:` and `https:` only |
+| scheme | `http:` and `https:` only, checked at the top of `fetch()` **and** by the opener's handler list: `build_opener()`'s defaults (FTPHandler, FileHandler, DataHandler) are deliberately not registered, so no `ftp://` or `file://` URL can reach a handler at all |
+| robots.txt | RFC 9309 matching in `Robots`: `*` wildcards, `$` end anchors, longest-match with `Allow` winning ties, most-specific `User-agent` record, `Crawl-delay` honoured. `Sitemap:` lines are read but only fetched if same-host http(s) |
 | scope | stays on the audited host (`www.`/apex), redirects re-checked |
-| bypass | `--allow-private` only, typed on the command line, never an environment variable; it prints a warning and records `public_only: false` in the report. The Hermes plugin never passes it |
+| report paths | `--json`/`--md` resolve inside `--out-dir` (inside the working directory); absolute names, `..` escapes and existing symlinks refused; the plugin's `out_dir` must sit under `~/.hermes/cache` or cwd |
+| bypass | `--allow-private` only, typed on the command line, never an environment variable; it widens **http(s) addresses** to private ranges and nothing else — ftp:, file: and every other scheme stay refused. It prints a warning and records `public_only: false` in the report. The Hermes plugin never passes it |
 
 Refused hosts exit 2 with the refused address in the message.
 
@@ -97,17 +105,19 @@ hand to a client — it is the part that can be re-checked.
 
 - **Quotability scoring covers English and German phrases** (German added in 1.2.3): other
   pages score lower on that axis; the report notes the page language.
-- Read-only HTTP GETs of public pages (the plugin's `save=true` additionally writes the
-  Markdown + JSON report to `out_dir`). `--pages` defaults to 8 and is clamped to 1–25.
-  geo-scan obeys robots.txt for `geo-scan`, waits at least 1 s between requests (more if
-  `Crawl-delay` asks), stays on the audited host, caps downloads, and caps a scan at
-  120 s (`--budget`).
+- Read-only HTTP(S) GETs of public pages (the plugin's `save=true` additionally writes the
+  Markdown + JSON report into `out_dir`, confined to `~/.hermes/cache` or the working
+  directory). `--pages` defaults to 8 and is clamped to 1–25; `--budget` defaults to 120 s
+  and is clamped to 10–120 s at every layer, the plugin asking for 90 s. geo-scan obeys
+  robots.txt for `geo-scan` with RFC 9309 matching, waits at least 1 s between requests
+  (more if `Crawl-delay` asks), stays on the audited host and caps downloads.
 - It measures **technical** readiness, not whether an engine actually cites the site.
 - CDN or WAF bot blocking (e.g. Cloudflare's AI-crawler blocking) is invisible to it: an
   open robots.txt does not prove crawlers get through.
 - There is no JS rendering; near-empty, script-heavy pages are flagged.
 - It is a single automated sample with no human review. Use the same `--pages` value for
   before/after comparisons.
-- Sent with `User-Agent: geo-scan/1.2.3 (+https://github.com/AureliusClaw/geo-scan; answer-engine readiness audit)`,
+- Sent with `User-Agent: geo-scan/<version>` — the running version, currently
+  `geo-scan/1.2.6 (+https://github.com/AureliusClaw/geo-scan; answer-engine readiness audit)` —
   so a site owner can find this run in their own logs. They can opt out with
   `User-agent: geo-scan` / `Disallow: /`.
